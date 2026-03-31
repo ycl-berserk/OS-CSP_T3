@@ -250,7 +250,13 @@ int main(int argc, char* argv[]) {
     }
     
     // 运行测试
-    Tester tester(executable, time_limit);
+    #ifdef _WIN32
+        // Windows: 直接使用可执行文件名
+        Tester tester(executable, time_limit);
+    #else
+        // Linux/Mac: 需要添加 ./
+        Tester tester("./" + executable, time_limit);
+    #endif
     bool all_passed = tester.run_all_tests(test_dir);
     
     // 清理
