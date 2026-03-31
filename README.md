@@ -48,7 +48,7 @@ OS-CSP_T3/
 ./run_tests.sh scheduler
 
 # Windows
-run_tests.bat 题目名
+.\run_tests.bat 题目名
 ```
 
 **输出示例**：

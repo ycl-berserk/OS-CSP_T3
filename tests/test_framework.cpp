@@ -7,6 +7,12 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
+#include <chrono>
+
+#ifdef _WIN32
+    #include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -19,11 +25,29 @@ struct TestCase {
 class Tester {
 private:
     std::string target_program;
-    std::string test_dir;
     double time_limit_sec;
+    int total_tests = 0;
+    int passed_tests = 0;
     
-    std::string exec(const std::string& cmd, const std::string& input) {
-        // 创建临时文件存储输入
+    // 安全删除文件的辅助函数
+    bool safe_remove(const std::string& filename) {
+        for (int i = 0; i < 10; i++) {
+            if (!fs::exists(filename)) return true;
+            try {
+                fs::remove(filename);
+                return true;
+            } catch (const std::exception& e) {
+                #ifdef _WIN32
+                    Sleep(10);
+                #else
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                #endif
+            }
+        }
+        return false;
+    }
+    
+    std::string exec(const std::string& input) {
         std::string input_file = "temp_input.txt";
         std::string output_file = "temp_output.txt";
         std::string error_file = "temp_error.txt";
@@ -32,8 +56,7 @@ private:
         infile << input;
         infile.close();
         
-        // 构建完整命令
-        std::string full_cmd = cmd + " < " + input_file + " > " + output_file + " 2> " + error_file;
+        std::string full_cmd = target_program + " < " + input_file + " > " + output_file + " 2> " + error_file;
         
         auto start = std::chrono::high_resolution_clock::now();
         int ret = system(full_cmd.c_str());
@@ -41,25 +64,25 @@ private:
         
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
         
+        std::string output;
+        std::string error;
+        
         if (duration.count() > time_limit_sec * 1000) {
-            return "TIME_LIMIT_EXCEEDED";
-        }
-        
-        if (ret != 0) {
+            output = "TIME_LIMIT_EXCEEDED";
+        } else if (ret != 0) {
             std::ifstream errfile(error_file);
-            std::string error((std::istreambuf_iterator<char>(errfile)),
+            error = std::string((std::istreambuf_iterator<char>(errfile)),
                                std::istreambuf_iterator<char>());
-            return "RUNTIME_ERROR: " + error;
+            output = "RUNTIME_ERROR: " + error;
+        } else {
+            std::ifstream outfile(output_file);
+            output = std::string((std::istreambuf_iterator<char>(outfile)),
+                                std::istreambuf_iterator<char>());
         }
         
-        std::ifstream outfile(output_file);
-        std::string output((std::istreambuf_iterator<char>(outfile)),
-                          std::istreambuf_iterator<char>());
-        
-        // 清理临时文件
-        fs::remove(input_file);
-        fs::remove(output_file);
-        fs::remove(error_file);
+        safe_remove(input_file);
+        safe_remove(output_file);
+        safe_remove(error_file);
         
         return output;
     }
@@ -80,7 +103,6 @@ private:
             }
         }
         
-        // 去除首尾空格
         size_t start = result.find_first_not_of(" \n\r\t");
         size_t end = result.find_last_not_of(" \n\r\t");
         
@@ -93,18 +115,17 @@ public:
         : target_program(program), time_limit_sec(time_limit) {}
     
     bool run_single_test(const TestCase& test) {
-        std::cout << "Running test: " << test.name << std::endl;
-        std::cout << "Input: " << test.input << std::endl;
+        total_tests++;
         
-        std::string output = exec(target_program, test.input);
+        std::string output = exec(test.input);
         
         if (output.find("TIME_LIMIT_EXCEEDED") != std::string::npos) {
-            std::cout << "❌ Time Limit Exceeded (" << time_limit_sec << "s)" << std::endl;
+            std::cout << "  [FAIL] Test " << test.name << ": Time Limit Exceeded (" << time_limit_sec << "s)" << std::endl;
             return false;
         }
         
         if (output.find("RUNTIME_ERROR") != std::string::npos) {
-            std::cout << "❌ Runtime Error: " << output << std::endl;
+            std::cout << "  [FAIL] Test " << test.name << ": Runtime Error" << std::endl;
             return false;
         }
         
@@ -112,12 +133,14 @@ public:
         std::string normalized_expected = normalize_output(test.expected_output);
         
         if (normalized_output == normalized_expected) {
-            std::cout << "✅ Passed" << std::endl;
+            std::cout << "  [PASS] Test " << test.name << ": Passed" << std::endl;
+            passed_tests++;
             return true;
         } else {
-            std::cout << "❌ Failed" << std::endl;
-            std::cout << "Expected: " << normalized_expected << std::endl;
-            std::cout << "Got: " << normalized_output << std::endl;
+            std::cout << "  [FAIL] Test " << test.name << ": Failed" << std::endl;
+            // 只在失败时显示详细差异
+            std::cout << "         Expected: " << normalized_expected << std::endl;
+            std::cout << "         Got:      " << normalized_output << std::endl;
             return false;
         }
     }
@@ -160,57 +183,36 @@ public:
             return false;
         }
         
-        int passed = 0;
+        std::cout << "\nRunning " << tests.size() << " test(s)..." << std::endl;
+        std::cout << "================================" << std::endl;
+        
         for (auto& test : tests) {
-            if (run_single_test(test)) {
-                passed++;
-            }
-            std::cout << std::endl;
+            run_single_test(test);
         }
         
-        std::cout << "========== Summary ==========" << std::endl;
-        std::cout << "Passed: " << passed << "/" << tests.size() << std::endl;
-        std::cout << "Score: " << (passed * 100 / tests.size()) << "%" << std::endl;
+        std::cout << "================================" << std::endl;
+        std::cout << "Result: " << passed_tests << "/" << total_tests << " passed" << std::endl;
         
-        return passed == tests.size();
+        if (passed_tests == total_tests) {
+            std::cout << "All tests passed!" << std::endl;
+        } else {
+            std::cout << (total_tests - passed_tests) << " test(s) failed" << std::endl;
+        }
+        std::cout << std::endl;
+        
+        return passed_tests == total_tests;
     }
 };
 
-void print_usage(const char* program_name) {
-    std::cout << "Usage: " << program_name << " [OPTIONS] <source_file>" << std::endl;
-    std::cout << std::endl;
+void print_usage() {
+    std::cout << "Usage: test_framework.exe <source_file> -t <test_dir> [options]" << std::endl;
     std::cout << "Options:" << std::endl;
-    std::cout << "  -t, --test <test_dir>    Run tests from specified directory" << std::endl;
-    std::cout << "  -l, --time-limit <sec>   Set time limit in seconds (default: 1.0)" << std::endl;
-    std::cout << "  -h, --help               Show this help message" << std::endl;
+    std::cout << "  -t, --test <dir>       Test directory" << std::endl;
+    std::cout << "  -l, --time-limit <sec> Time limit in seconds (default: 1.0)" << std::endl;
+    std::cout << "  -h, --help             Show help" << std::endl;
     std::cout << std::endl;
-    std::cout << "Examples:" << std::endl;
-    std::cout << "  " << program_name << " main.cpp -t tests/problem1" << std::endl;
-    std::cout << "  " << program_name << " solution.cpp -t tests/array_sum --time-limit 2.0" << std::endl;
-}
-
-std::string find_source_file(const std::string& input) {
-    // 如果直接提供了文件路径，直接返回
-    if (fs::exists(input)) {
-        return input;
-    }
-    
-    // 尝试在 src 目录下查找
-    std::vector<std::string> possible_paths = {
-        "src/" + input + "/" + input + ".cpp",
-        "src/" + input + ".cpp",
-        input + "/" + input + ".cpp",
-        input + ".cpp"
-    };
-    
-    for (const auto& path : possible_paths) {
-        if (fs::exists(path)) {
-            std::cout << "Found source file: " << path << std::endl;
-            return path;
-        }
-    }
-    
-    return input; // 返回原始输入，让后续错误处理
+    std::cout << "Example:" << std::endl;
+    std::cout << "  test_framework.exe ../src/problem1/problem1.cpp -t test_cases/problem1" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -218,18 +220,13 @@ int main(int argc, char* argv[]) {
     std::string test_dir;
     double time_limit = 1.0;
     
-    // 简单命令行解析
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--test") == 0) {
-            if (i + 1 < argc) {
-                test_dir = argv[++i];
-            }
+            if (i + 1 < argc) test_dir = argv[++i];
         } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--time-limit") == 0) {
-            if (i + 1 < argc) {
-                time_limit = std::stod(argv[++i]);
-            }
+            if (i + 1 < argc) time_limit = std::stod(argv[++i]);
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            print_usage(argv[0]);
+            print_usage();
             return 0;
         } else {
             source_file = argv[i];
@@ -237,33 +234,27 @@ int main(int argc, char* argv[]) {
     }
     
     if (source_file.empty() || test_dir.empty()) {
-        print_usage(argv[0]);
+        print_usage();
         return 1;
     }
     
-    // 查找源文件
-    std::string actual_source = find_source_file(source_file);
+    // 编译
+    std::string executable = "temp_prog.exe";
+    std::string compile_cmd = "g++ -std=c++17 " + source_file + " -o " + executable;
     
-    if (!fs::exists(actual_source)) {
-        std::cerr << "Error: Source file not found: " << source_file << std::endl;
-        return 1;
-    }
+    std::cout << "Compiling " << source_file << "..." << std::endl;
     
-    // 编译源文件
-    std::string executable = "temp_executable";
-    std::string compile_cmd = "g++ -std=c++17 " + actual_source + " -o " + executable;
-    
-    std::cout << "Compiling " << actual_source << "..." << std::endl;
     if (system(compile_cmd.c_str()) != 0) {
         std::cerr << "Compilation failed!" << std::endl;
         return 1;
     }
     
     // 运行测试
-    Tester tester("./" + executable, time_limit);
+    Tester tester(executable, time_limit);
     bool all_passed = tester.run_all_tests(test_dir);
     
     // 清理
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     fs::remove(executable);
     
     return all_passed ? 0 : 1;
