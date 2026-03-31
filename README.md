@@ -42,6 +42,7 @@ OS-CSP_T3/
 
 ```bash
 # Linux/macOS
+chmod +x run_tests.sh
 ./run_tests.sh 题目名
 
 # 示例：测试“进程调度”题目
